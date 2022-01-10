@@ -1,0 +1,14 @@
+[package]
+name = "vraw_convert"
+version = "0.2.0"
+authors = ["Niclas Olmenius <niclas@voysys.se>, Jonathan Nilsson <jonathan@voysys.se>, Torkel Danielsson <torkel@voysys.se>"]
+publish = false
+edition = "2021"
+
+[dependencies]
+byteorder = "1"
+chrono = "0.4.5"
+clap = { version = "3", features = ["derive"] }
+msgbox = "0.6"
+static_assertions = "1"
+zerocopy = "0.5"
