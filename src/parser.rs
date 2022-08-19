@@ -1,14 +1,27 @@
 use byteorder::LittleEndian;
 use static_assertions::const_assert_eq;
-use std::{convert::TryFrom, error::Error, io::BufRead, mem};
+use std::{
+    convert::TryFrom,
+    error::Error,
+    fs::File,
+    io::{BufRead, Write},
+    mem::{self, size_of},
+};
 use zerocopy::{AsBytes, FromBytes, LayoutVerified, Unaligned};
 
 const RECORDING_MAGIC: u32 = 0xFEEDFEED;
 const RECORDING_FRAME_MAGIC: u32 = 0xAAAAFEED;
 const GENERIC_METADATA_HEADER_MAGIC: u32 = 0xBACCDEEF;
 
+const VIDEO_PLACEMENT_METADATA_MAGIC_1: u8 = 0x00;
+const VIDEO_PLACEMENT_METADATA_MAGIC_2: u8 = 0x00;
+const VIDEO_PLACEMENT_METADATA_MAGIC_3: u8 = 0x00;
+const VIDEO_PLACEMENT_METADATA_MAGIC_4: u8 = 0x56;
+const VIDEO_PLACEMENT_METADATA_MAGIC_5: u8 = 0x4A;
+
 type I32 = zerocopy::I32<LittleEndian>;
 type I64 = zerocopy::I64<LittleEndian>;
+type U16 = zerocopy::U16<LittleEndian>;
 type U32 = zerocopy::U32<LittleEndian>;
 type U64 = zerocopy::U64<LittleEndian>;
 
@@ -55,6 +68,19 @@ struct RecordingIndexHeader {
 }
 
 const_assert_eq!(mem::size_of::<RecordingIndexHeader>(), 8);
+
+#[derive(Debug, Clone, FromBytes, AsBytes, Unaligned)]
+#[repr(C)]
+struct VideoPlacementMetadataFooter {
+    metadata_size: U16,
+    magic_1: u8,
+    magic_2: u8,
+    magic_3: u8,
+    magic_4: u8,
+    magic_5: u8,
+}
+
+const_assert_eq!(mem::size_of::<VideoPlacementMetadataFooter>(), 7);
 
 #[derive(Debug, Clone)]
 pub struct FrameInfo {
@@ -207,6 +233,30 @@ fn parse_generic_metadata_header(bytes: &[u8]) -> Result<&GenericMetadataHeader,
         })
 }
 
+fn parse_video_placement_footer(
+    bytes: &[u8],
+) -> Result<&VideoPlacementMetadataFooter, Box<dyn Error>> {
+    LayoutVerified::<&[u8], VideoPlacementMetadataFooter>::new_unaligned(bytes)
+        .ok_or_else(|| "Failed to parse VideoPlacementMetadataFooter".into())
+        .map(|lv| lv.into_ref())
+        .and_then(|res| {
+            if res.magic_1 == VIDEO_PLACEMENT_METADATA_MAGIC_1
+                && res.magic_2 == VIDEO_PLACEMENT_METADATA_MAGIC_2
+                && res.magic_3 == VIDEO_PLACEMENT_METADATA_MAGIC_3
+                && res.magic_4 == VIDEO_PLACEMENT_METADATA_MAGIC_4
+                && res.magic_5 == VIDEO_PLACEMENT_METADATA_MAGIC_5
+            {
+                Ok(res)
+            } else {
+                Err("Magic does not match".into())
+            }
+        })
+}
+
+fn remove_video_placement_footer() {
+    todo!()
+}
+
 pub fn parse_and_discard_recording_metadata(f: &mut dyn BufRead) -> Result<(), Box<dyn Error>> {
     let mut recording_metadata_bytes: [u8; mem::size_of::<RecordingMetadata>()] =
         [0; mem::size_of::<RecordingMetadata>()];
@@ -235,7 +285,7 @@ pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>>
         return Err("Frame size not parsed correctly.".into());
     }
 
-    let format = VideoCaptureFormat::try_from(recorded_frame_metadata.format.get())?;
+    let mut format = VideoCaptureFormat::try_from(recorded_frame_metadata.format.get())?;
 
     if format.is_coded() {
         if recorded_frame_metadata.width.get() != 0 && recorded_frame_metadata.height.get() != 0 {
@@ -251,6 +301,45 @@ pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>>
     // Read frame data
     let mut raw_frame_data: Vec<u8> = vec![0; recorded_frame_metadata.size.get() as usize];
     f.read_exact(&mut raw_frame_data)?;
+
+    // ------------------------------------------------------------------------
+    // Parse VideoPlacementMetadataFooter
+
+    let mut frame_data: Vec<u8> = Vec::new();
+
+    if format != VideoCaptureFormat::Stats {
+        let mut offset = 0;
+        let mut video_placement_footer;
+
+        loop {
+            video_placement_footer = parse_video_placement_footer(
+                &raw_frame_data[(raw_frame_data.len()
+                    - size_of::<VideoPlacementMetadataFooter>()
+                    - offset)..(raw_frame_data.len() - offset)],
+            );
+
+            if video_placement_footer.is_ok() {
+                // println!("{:?}", &video_placement_footer.unwrap());
+
+                break;
+            }
+
+            if offset > 10 {
+                format = VideoCaptureFormat::Stats;
+                break;
+            }
+            offset += 1;
+        }
+
+        if let Ok(video_placement_footer) = video_placement_footer {
+            frame_data = raw_frame_data[..(raw_frame_data.len()
+                - video_placement_footer.clone().metadata_size.get() as usize
+                - size_of::<VideoPlacementMetadataFooter>())]
+                .to_vec();
+        }
+    } else {
+        frame_data = raw_frame_data.clone();
+    }
 
     // ------------------------------------------------------------------------
     // Parse generic metadata header
@@ -277,6 +366,6 @@ pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>>
         resolution,
         format,
         timestamp: recorded_frame_metadata.receive_timestamp.get(),
-        raw_data: raw_frame_data,
+        raw_data: frame_data.to_owned(),
     })
 }

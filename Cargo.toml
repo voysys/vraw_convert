@@ -12,3 +12,4 @@ clap = { version = "3", features = ["derive"] }
 msgbox = "0.6"
 static_assertions = "1"
 zerocopy = "0.5"
+mp4 = "0.12.0"
