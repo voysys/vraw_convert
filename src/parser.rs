@@ -4,14 +4,14 @@ use std::{
     convert::TryFrom,
     error::Error,
     fs::File,
-    io::{BufRead, Write},
+    io::{BufReader, Read, Seek, SeekFrom},
     mem::{self, size_of},
 };
 use zerocopy::{AsBytes, FromBytes, LayoutVerified, Unaligned};
 
-const RECORDING_MAGIC: u32 = 0xFEEDFEED;
-const RECORDING_FRAME_MAGIC: u32 = 0xAAAAFEED;
 const GENERIC_METADATA_HEADER_MAGIC: u32 = 0xBACCDEEF;
+const RECORDING_FRAME_MAGIC: u32 = 0xAAAAFEED;
+const RECORDING_INDEX_FOOTER_MAGIC: u32 = 0xDCBAFEED;
 
 const VIDEO_PLACEMENT_METADATA_MAGIC_1: u8 = 0x00;
 const VIDEO_PLACEMENT_METADATA_MAGIC_2: u8 = 0x00;
@@ -71,6 +71,24 @@ const_assert_eq!(mem::size_of::<RecordingIndexHeader>(), 8);
 
 #[derive(Debug, Clone, FromBytes, AsBytes, Unaligned)]
 #[repr(C)]
+pub struct RecordingIndexEntry {
+    offset: I64,
+    receive_timestamp: I64,
+}
+
+const_assert_eq!(mem::size_of::<RecordingIndexEntry>(), 16);
+
+#[derive(Debug, Clone, FromBytes, AsBytes, Unaligned)]
+#[repr(C)]
+struct RecordingIndexFooter {
+    magic: U32,
+    frame_count: U32,
+}
+
+const_assert_eq!(mem::size_of::<RecordingIndexFooter>(), 8);
+
+#[derive(Debug, Clone, FromBytes, AsBytes, Unaligned)]
+#[repr(C)]
 struct VideoPlacementMetadataFooter {
     metadata_size: U16,
     magic_1: u8,
@@ -105,67 +123,15 @@ pub enum VideoCaptureFormat {
     Mono8 = 9,
     H264 = -4601,
     H265 = -4602,
-    MJPEG = -4603,
+    Mjpeg = -4603,
     Stats = -4701,
 }
 
 impl VideoCaptureFormat {
-    pub fn ffmpeg_pix_fmt(&self) -> &'static str {
-        match self {
-            Self::Rgb => "rgb24",
-            Self::Bgr => "bgr24",
-            Self::Yuv => "yuv420p",
-            Self::Nv12 => "nv12",
-            Self::Yuyv => "yuyv422",
-            Self::Uyvy => "uyvy422",
-            Self::Raw => "bayer_rggb8",      // raw 8 bit sensor data
-            Self::Mono16 => "gray16le",      // assuming little endian
-            Self::Raw16 => "bayer_rggb16le", // raw 16 bit sensor data
-            Self::Mono8 => "gray",
-            Self::H264 | Self::H265 | Self::MJPEG | Self::Stats => panic!("Not raw"),
-        }
-    }
-
-    pub fn ffmpeg_demuxer(self) -> &'static str {
-        match self {
-            Self::Rgb
-            | Self::Bgr
-            | Self::Yuv
-            | Self::Nv12
-            | Self::Yuyv
-            | Self::Uyvy
-            | Self::Raw
-            | Self::Mono16
-            | Self::Raw16
-            | Self::Mono8 => "rawvideo",
-            Self::H264 => "h264",
-            Self::H265 => "hevc",
-            Self::MJPEG => "mjpeg",
-            Self::Stats => panic!("Not video"),
-        }
-    }
-
-    pub fn ffmpeg_codec(self) -> &'static str {
-        match self {
-            Self::Rgb
-            | Self::Bgr
-            | Self::Yuv
-            | Self::Nv12
-            | Self::Yuyv
-            | Self::Uyvy
-            | Self::Raw
-            | Self::Mono16
-            | Self::Raw16
-            | Self::Mono8 => "libx264",
-            Self::H264 | Self::H265 | Self::MJPEG => "copy",
-            Self::Stats => panic!("Not video"),
-        }
-    }
-
     pub fn is_coded(&self) -> bool {
         matches!(
             self,
-            VideoCaptureFormat::H264 | VideoCaptureFormat::H265 | VideoCaptureFormat::MJPEG
+            VideoCaptureFormat::H264 | VideoCaptureFormat::H265 | VideoCaptureFormat::Mjpeg
         )
     }
 }
@@ -187,24 +153,30 @@ impl TryFrom<i32> for VideoCaptureFormat {
             9 => Ok(VideoCaptureFormat::Mono8),
             -4601 => Ok(VideoCaptureFormat::H264),
             -4602 => Ok(VideoCaptureFormat::H265),
-            -4603 => Ok(VideoCaptureFormat::MJPEG),
+            -4603 => Ok(VideoCaptureFormat::Mjpeg),
             -4701 => Ok(VideoCaptureFormat::Stats),
             _ => Err(format!("Unknown video capture format {}", format).into()),
         }
     }
 }
 
-fn parse_recording_metadata(bytes: &[u8]) -> Result<&RecordingMetadata, Box<dyn Error>> {
-    LayoutVerified::<&[u8], RecordingMetadata>::new_unaligned(bytes)
-        .ok_or_else(|| "Failed to parse RecordingMetadata".into())
+fn parse_recording_index_footer(bytes: &[u8]) -> Result<&RecordingIndexFooter, Box<dyn Error>> {
+    LayoutVerified::<&[u8], RecordingIndexFooter>::new_unaligned(bytes)
+        .ok_or_else(|| "Failed to parse RecordingIndexFooter".into())
         .map(|lv| lv.into_ref())
         .and_then(|res| {
-            if res.magic.get() == RECORDING_MAGIC {
+            if res.magic.get() == RECORDING_INDEX_FOOTER_MAGIC {
                 Ok(res)
             } else {
                 Err("Magic does not match".into())
             }
         })
+}
+
+fn parse_recording_index_entry(bytes: &[u8]) -> Result<&RecordingIndexEntry, Box<dyn Error>> {
+    LayoutVerified::<&[u8], RecordingIndexEntry>::new_unaligned(bytes)
+        .ok_or_else(|| "Failed to parse RecordingIndexEntry".into())
+        .map(|lv| lv.into_ref())
 }
 
 fn parse_recorded_frame_metadata(bytes: &[u8]) -> Result<&RecordedFrameMetadata, Box<dyn Error>> {
@@ -253,25 +225,45 @@ fn parse_video_placement_footer(
         })
 }
 
-fn remove_video_placement_footer() {
-    todo!()
+pub fn read_index(f: &mut BufReader<File>) -> Result<Vec<RecordingIndexEntry>, Box<dyn Error>> {
+    f.seek(SeekFrom::End(
+        -(mem::size_of::<RecordingIndexFooter>() as i64),
+    ))?;
+
+    let mut index_footer_bytes: [u8; mem::size_of::<RecordingIndexFooter>()] =
+        [0; mem::size_of::<RecordingIndexFooter>()];
+    f.read_exact(&mut index_footer_bytes).unwrap();
+
+    let footer = parse_recording_index_footer(&index_footer_bytes)?;
+
+    f.seek(SeekFrom::End(
+        -((mem::size_of::<RecordingIndexFooter>()
+            + footer.frame_count.get() as usize * mem::size_of::<RecordingIndexEntry>())
+            as i64),
+    ))?;
+
+    // At the first frame now
+    let mut res = Vec::with_capacity(footer.frame_count.get() as _);
+
+    for _ in 0..footer.frame_count.get() {
+        let mut index_entry_bytes: [u8; mem::size_of::<RecordingIndexEntry>()] =
+            [0; mem::size_of::<RecordingIndexEntry>()];
+        f.read_exact(&mut index_entry_bytes)?;
+
+        let entry = parse_recording_index_entry(&index_entry_bytes)?;
+
+        res.push(entry.to_owned());
+    }
+
+    Ok(res)
 }
 
-pub fn parse_and_discard_recording_metadata(f: &mut dyn BufRead) -> Result<(), Box<dyn Error>> {
-    let mut recording_metadata_bytes: [u8; mem::size_of::<RecordingMetadata>()] =
-        [0; mem::size_of::<RecordingMetadata>()];
-    f.read_exact(&mut recording_metadata_bytes)?;
+pub fn parse_raw_frame(
+    f: &mut BufReader<File>,
+    entry: &RecordingIndexEntry,
+) -> Result<FrameInfo, Box<dyn Error>> {
+    f.seek(SeekFrom::Start(entry.offset.get() as _))?;
 
-    if parse_recording_metadata(&recording_metadata_bytes[..]).is_err() {
-        return Err(
-            "Error parsing recording metadata. (Input is probably not a .vraw file)".into(),
-        );
-    };
-
-    Ok(())
-}
-
-pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>> {
     // ------------------------------------------------------------------------
     // Parse header
     let mut recorded_frame_metadata_bytes: [u8; mem::size_of::<RecordedFrameMetadata>()] =
@@ -285,7 +277,7 @@ pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>>
         return Err("Frame size not parsed correctly.".into());
     }
 
-    let mut format = VideoCaptureFormat::try_from(recorded_frame_metadata.format.get())?;
+    let format = VideoCaptureFormat::try_from(recorded_frame_metadata.format.get())?;
 
     if format.is_coded() {
         if recorded_frame_metadata.width.get() != 0 && recorded_frame_metadata.height.get() != 0 {
@@ -304,38 +296,32 @@ pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>>
 
     // ------------------------------------------------------------------------
     // Parse VideoPlacementMetadataFooter
-
-    let mut frame_data: Vec<u8> = Vec::new();
-
+    let frame_data: Vec<u8>;
     if format != VideoCaptureFormat::Stats {
         let mut offset = 0;
-        let mut video_placement_footer;
 
         loop {
-            video_placement_footer = parse_video_placement_footer(
+            // Loop from the end to try and match the video placement magic(s)
+            if let Ok(video_placement_footer) = parse_video_placement_footer(
                 &raw_frame_data[(raw_frame_data.len()
                     - size_of::<VideoPlacementMetadataFooter>()
                     - offset)..(raw_frame_data.len() - offset)],
-            );
-
-            if video_placement_footer.is_ok() {
-                // println!("{:?}", &video_placement_footer.unwrap());
+            ) {
+                frame_data = raw_frame_data[..(raw_frame_data.len()
+                    - video_placement_footer.clone().metadata_size.get() as usize
+                    - size_of::<VideoPlacementMetadataFooter>())]
+                    .to_vec();
 
                 break;
-            }
+            } else {
+                if offset > 10 {
+                    // If the end has to be looped more than 10 times then it probably do not have alignment data
+                    frame_data = raw_frame_data.clone();
+                    break;
+                }
 
-            if offset > 10 {
-                format = VideoCaptureFormat::Stats;
-                break;
+                offset += 1;
             }
-            offset += 1;
-        }
-
-        if let Ok(video_placement_footer) = video_placement_footer {
-            frame_data = raw_frame_data[..(raw_frame_data.len()
-                - video_placement_footer.clone().metadata_size.get() as usize
-                - size_of::<VideoPlacementMetadataFooter>())]
-                .to_vec();
         }
     } else {
         frame_data = raw_frame_data.clone();
@@ -366,6 +352,6 @@ pub fn parse_raw_frame(f: &mut dyn BufRead) -> Result<FrameInfo, Box<dyn Error>>
         resolution,
         format,
         timestamp: recorded_frame_metadata.receive_timestamp.get(),
-        raw_data: frame_data.to_owned(),
+        raw_data: frame_data,
     })
 }

@@ -1,3 +1,4 @@
 target
-assets
+assets/*.mp4
 *.lnk
+*.mp4

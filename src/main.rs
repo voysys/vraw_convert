@@ -1,6 +1,6 @@
 use clap::Parser;
 use msgbox::IconType;
-use processing::run;
+use oden_vraw_convert::convert_vraw_to_mp4;
 use std::error::Error;
 
 mod parser;
@@ -18,26 +18,14 @@ pub struct Config {
     #[clap(default_value = "in.vraw")]
     input: String,
 
-    /// Specifies the framerate
-    #[clap(short, long, default_value = "30")]
-    framerate: String,
-
-    /// Specifies the x264 ffmpeg preset to use
-    #[clap(short, long, default_value = "veryfast")]
-    preset: String,
-
-    /// Specifies the x264 crf value
-    #[clap(long, default_value = "23")]
-    crf: String,
-
-    /// Specifies the output file name
+    /// Specifies the output file name ex. video.mp4 (Folder path must exist)
     output: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::parse();
 
-    if let Err(e) = run(config) {
+    if let Err(e) = convert_vraw_to_mp4(&config.input, config.output) {
         println!("Application error: {}", e);
 
         let err_msg: String = e.to_string();
