@@ -1,9 +1,24 @@
-# oden_vraw_convert
+# vraw_convert
 
 Convert Voysys .vraw files to .mp4
 
+## Usage:
+Clone the repo:
+```rust
+git clone git@github.com:voysys/vraw_convert.git
+```
+Build the project:
+```rust
+cargo build --release
+```
+Execute the binary with the input .vraw and/or the ouput .mp4:
+```rust
+./target/release/vraw_convert.exe input.vraw output.mp4
+```
+
 ## Issues
 - The generated MP4 cannot be played in windows media player. VLC can be used to play the extracted .mp4.
+- Folder path to the output.mp4 need to exist.
 
 ## Voysys vraw video format description
 

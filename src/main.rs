@@ -1,7 +1,7 @@
 use clap::Parser;
 use msgbox::IconType;
-use oden_vraw_convert::convert_vraw_to_mp4;
 use std::error::Error;
+use vraw_convert::convert_vraw_to_mp4;
 
 mod parser;
 mod processing;
