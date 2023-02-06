@@ -1,51 +1,24 @@
 # vraw_convert
 
-Convert Voysys .vraw files to other formats, using ffmpeg.
+Convert Voysys .vraw files to .mp4
 
-The tool can be run on the command line. Another way to use it is to drag and drop a .vraw file onto the application (or a shortcut to the application, tested on Windows).
+## Usage:
+Clone the repo:
+```rust
+git clone git@github.com:voysys/vraw_convert.git
+```
+Build the project:
+```rust
+cargo build --release
+```
+Execute the binary with the input .vraw and/or the ouput .mp4:
+```rust
+./target/release/vraw_convert.exe input.vraw output.mp4
+```
 
-
-## Dependencies
-
-To use this tool, it is necessary to have ffmpeg installed system-wide. (On Windows ffmpeg.exe must be in PATH.)
-
-
-## Overview
-
-General procedure:
-
-Read the raw video file frame by frame.
-Pipe each raw frame to ffmpeg via stdin
-
----
-
-* Determine frame rate
-    * Parse frame index
-        * Read time stamps
-    * Average time between each frame
-
----
-
-* Ignore header (skip first 16 bytes)
-* Repeat until RecordingIndexHeader is reached (0xABCDFEED)
-    * Parse RecordedFrameMetadata
-        * Ignore magic, id, frameNo (skip 12 bytes)
-        * Read width (4 bytes)
-        * Read height (4 bytes)
-        * Read format (4 bytes)
-            * See VideoCaptureFormat code block
-        * Ignore timestamp, receiveTimestamp (16 bytes)
-        * Read total frame size (8 bytes)
-    * Process frame data
-        * Use ffmpeg with appropriate arguments based on frame width, height, format and size
-    * Parse GenericMetadataHeader
-        * Ignore magic (4 bytes)
-        * Read genericMetadataSize (4 bytes)
-    * Process generic metadata
-        * Skip genericMetadataSize bytes
-    * Parse GenericMetadataFooter
-        * Ignore magic, genericMetadataSize (8 bytes)
-
+## Issues
+- The generated MP4 cannot be played in windows media player. VLC can be used to play the extracted .mp4.
+- Folder path to the output.mp4 need to exist.
 
 ## Voysys vraw video format description
 
@@ -64,6 +37,11 @@ The following tables describe the layout of the raw recording format:
 | GenericMetadata       | Variable     |
 | GenericMetadataFooter | 8            |
 
+
+| Footer content | Size [bytes] |
+| -------------- | ------------ |
+| Alignment data | 7            |
+
 Corresponding structs:
 ```cpp
 #define RECORDING_MAGIC               0xFEEDFEED
@@ -72,6 +50,11 @@ Corresponding structs:
 #define GENERIC_METADATA_FOOTER_MAGIC 0xBACCBEEF
 #define RECORDING_INDEX_HEADER_MAGIC  0xABCDFEED
 #define RECORDING_INDEX_FOOTER_MAGIC  0xDCBAFEED
+#define VIDEO_PLACEMENT_METADATA_MAGIC_1 0x00;
+#define VIDEO_PLACEMENT_METADATA_MAGIC_2 0x00;
+#define VIDEO_PLACEMENT_METADATA_MAGIC_3 0x00;
+#define VIDEO_PLACEMENT_METADATA_MAGIC_4 0x56;
+#define VIDEO_PLACEMENT_METADATA_MAGIC_5 0x4A;
 
 struct RecordingMetadata {
     u32 magic = RECORDING_MAGIC;
@@ -105,6 +88,15 @@ struct RecordingIndexHeader {
     u32 magic = RECORDING_INDEX_HEADER_MAGIC;                 // This value will always be 0xABCDFEED
     u32 _padding = 0;
 };
+
+struct VideoPlacementMetadataFooter {
+    metadata_size: 0,
+    magic_1 = VIDEO_PLACEMENT_METADATA_MAGIC_1,
+    magic_2 = VIDEO_PLACEMENT_METADATA_MAGIC_2,
+    magic_3 = VIDEO_PLACEMENT_METADATA_MAGIC_3,
+    magic_4 = VIDEO_PLACEMENT_METADATA_MAGIC_4,
+    magic_5 = VIDEO_PLACEMENT_METADATA_MAGIC_5,
+}
 ```
 
 ```cpp
