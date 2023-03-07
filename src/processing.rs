@@ -1,5 +1,5 @@
 use crate::parser::{parse_raw_frame, read_index, VideoCaptureFormat};
-use chrono::Local;
+use chrono::{DateTime, Local};
 use mp4::{MediaConfig, Mp4Config, Mp4Sample, Mp4Writer, TrackConfig};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -16,25 +16,7 @@ use zerocopy::AsBytes;
 pub fn convert_vraw_to_mp4(input: &String, output: Option<String>) -> Result<(), String> {
     let input_file = File::open(input).map_err(|_| "vraw_convert: failed to open file")?;
 
-    let output = output.unwrap_or_else(|| {
-        let input_path = Path::new(&input);
-
-        let output_file_name = input_path.file_name().unwrap().to_str().unwrap();
-
-        let output_file_name = format!(
-            "{}_{}.mp4",
-            output_file_name.trim_end_matches(".vraw"),
-            Local::now().format("%Y-%m-%dT%H_%M_%S")
-        );
-
-        input_path
-            .ancestors()
-            .nth(2)
-            .unwrap()
-            .join(output_file_name)
-            .to_string_lossy()
-            .to_string()
-    });
+    let output = output.unwrap_or(derive_output_from_input(Path::new(input), Local::now()));
 
     let mut f = BufReader::new(input_file);
 
@@ -118,4 +100,40 @@ pub fn convert_vraw_to_mp4(input: &String, output: Option<String>) -> Result<(),
         .map_err(|_| "vraw_convert: failed to end mp4 writing")?;
 
     Ok(())
+}
+
+fn derive_output_from_input(input_path: &Path, timestamp: DateTime<Local>) -> String {
+    let output_file_name = input_path.file_name().unwrap().to_str().unwrap();
+
+    let output_file_name = format!(
+        "{}_{}.mp4",
+        output_file_name.trim_end_matches(".vraw"),
+        timestamp.format("%Y-%m-%dT%H_%M_%S")
+    );
+
+    input_path
+        .ancestors()
+        .nth(1)
+        .unwrap()
+        .join(output_file_name)
+        .to_string_lossy()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Local, TimeZone};
+
+    #[test]
+    pub fn derive_output_from_input_same_folder() {
+        let input = Path::new("/path/to/raw_recording/recording.vraw");
+        let timestamp = Local.ymd(2022, 03, 07).and_hms(20, 50, 0);
+
+        let output = derive_output_from_input(input, timestamp);
+        assert_eq!(
+            "/path/to/raw_recording/recording_2022-03-07T20_50_00.mp4",
+            output
+        );
+    }
 }
