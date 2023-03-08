@@ -1,7 +1,7 @@
 mod parser;
 mod processing;
 
-pub use processing::convert_vraw_to_mp4;
+pub use processing::convert_vraw;
 
 #[cfg(test)]
 mod tests {
@@ -13,7 +13,7 @@ mod tests {
 
     #[test]
     fn try_convert_h265() {
-        crate::processing::convert_vraw_to_mp4(
+        crate::processing::convert_vraw(
             &"assets/h265.vraw".to_string(),
             Some(String::from("assets/h265.mp4")),
         )
@@ -29,7 +29,7 @@ mod tests {
 
     #[test]
     fn try_convert_no_video_alignment_data() {
-        crate::processing::convert_vraw_to_mp4(
+        crate::processing::convert_vraw(
             &"assets/no_output_alignment.vraw".to_string(),
             Some(String::from("assets/no_output_alignment.mp4")),
         )

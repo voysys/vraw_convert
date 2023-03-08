@@ -13,7 +13,7 @@ use zerocopy::AsBytes;
 ///
 /// output: name of the gengerated .mp4 file. If None is specified the file will
 /// be named after the input and the time of generation.
-pub fn convert_vraw_to_mp4(input: &String, output: Option<String>) -> Result<(), String> {
+pub fn convert_vraw(input: &String, output: Option<String>) -> Result<(), String> {
     let input_file = File::open(input).map_err(|_| "vraw_convert: failed to open file")?;
 
     let output = output.unwrap_or(derive_output_from_input(Path::new(input), Local::now()));

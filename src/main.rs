@@ -1,10 +1,10 @@
 use clap::Parser;
 use msgbox::IconType;
 use std::error::Error;
-use vraw_convert::convert_vraw_to_mp4;
 
 mod parser;
 mod processing;
+use vraw_convert::convert_vraw;
 
 #[derive(Parser)]
 #[clap(
@@ -25,7 +25,7 @@ pub struct Config {
 fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::parse();
 
-    if let Err(e) = convert_vraw_to_mp4(&config.input, config.output) {
+    if let Err(e) = convert_vraw(&config.input, config.output) {
         println!("Application error: {}", e);
 
         let err_msg: String = e.to_string();
