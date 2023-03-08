@@ -1,9 +1,6 @@
 use clap::Parser;
 use msgbox::IconType;
 use std::error::Error;
-
-mod parser;
-mod processing;
 use vraw_convert::convert_vraw;
 
 #[derive(Parser)]
