@@ -1,6 +1,6 @@
 # vraw_convert
 
-Convert Voysys .vraw files to .mp4
+Convert Voysys .vraw files to .mp4 or .mpjpeg video files
 
 ## Usage:
 Clone the repo:
@@ -19,6 +19,10 @@ Execute the binary with the input .vraw and/or the ouput .mp4:
 ## Issues
 - The generated MP4 cannot be played in windows media player. VLC can be used to play the extracted .mp4.
 - Folder path to the output.mp4 need to exist.
+- The generated MJPEG file cannot be played in VLC.
+    - `ffplay` can be used to playback the video
+    - `ffmpeg -i IN.mjpeg OUT.mp4` to convert the extracted MJPEG file
+	to a MP4 file that can be opened and played back in VLC.
 
 ## Voysys vraw video format description
 

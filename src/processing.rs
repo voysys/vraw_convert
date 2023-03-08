@@ -1,13 +1,13 @@
-use crate::parser::{parse_raw_frame, read_index, VideoCaptureFormat};
+use crate::parser::{parse_raw_frame, read_index, RecordingIndexEntry, VideoCaptureFormat};
 use chrono::{DateTime, Local};
 use mp4::{MediaConfig, Mp4Config, Mp4Sample, Mp4Writer, TrackConfig};
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use zerocopy::AsBytes;
 
 /// Function that converts a .vraw file to an .mp4 file.
-/// NOTE: Currently only HEVC is supported!!!
+/// NOTE: Currently only HEVC and MJPEG is supported!!!
 ///
 /// input: path to .vraw file
 ///
@@ -15,8 +15,6 @@ use zerocopy::AsBytes;
 /// be named after the input and the time of generation.
 pub fn convert_vraw(input: &String, output: Option<String>) -> Result<(), String> {
     let input_file = File::open(input).map_err(|_| "vraw_convert: failed to open file")?;
-
-    let output = output.unwrap_or(derive_output_from_input(Path::new(input), Local::now()));
 
     let mut f = BufReader::new(input_file);
 
@@ -27,15 +25,41 @@ pub fn convert_vraw(input: &String, output: Option<String>) -> Result<(), String
         return Err("vraw_convert: index contains no frames".into());
     }
 
+    let format = &entries
+        .iter()
+        .find_map(|entry| match parse_raw_frame(&mut f, entry).ok()?.format {
+            VideoCaptureFormat::Stats => None,
+            f => Some(f),
+        })
+        .ok_or(String::from("vraw_convert: unable to find a video frame"))?;
+
+    let output = output.unwrap_or(derive_output_from_input(
+        Path::new(input),
+        &format,
+        Local::now(),
+    )?);
+    let dst_file = File::create(output).map_err(|_| "vraw_convert: file creation failed")?;
+    let writer = BufWriter::new(dst_file);
+    match format {
+        VideoCaptureFormat::H265 => extract_hevc_from_vraw(f, entries, writer)?,
+        VideoCaptureFormat::Mjpeg => extract_mjpeg_from_vraw(f, entries, writer)?,
+        e => unreachable!("unexpected format {:?}", e),
+    }
+
+    Ok(())
+}
+
+fn extract_hevc_from_vraw(
+    mut f: BufReader<File>,
+    entries: Vec<RecordingIndexEntry>,
+    writer: BufWriter<File>,
+) -> Result<(), String> {
     let config = Mp4Config {
         major_brand: str::parse("isom").unwrap(),
         minor_version: 512,
         compatible_brands: vec![str::parse("hev1").unwrap()],
         timescale: 1000, // This specifies milliseconds
     };
-
-    let dst_file = File::create(output).map_err(|_| "vraw_convert: file creation failed")?;
-    let writer = BufWriter::new(dst_file);
 
     let mut mp4_writer = Mp4Writer::write_start(writer, &config)
         .map_err(|_| "vraw_convert: failed to start writing mp4")?;
@@ -102,22 +126,54 @@ pub fn convert_vraw(input: &String, output: Option<String>) -> Result<(), String
     Ok(())
 }
 
-fn derive_output_from_input(input_path: &Path, timestamp: DateTime<Local>) -> String {
+fn extract_mjpeg_from_vraw(
+    mut f: BufReader<File>,
+    entries: Vec<RecordingIndexEntry>,
+    mut writer: BufWriter<File>,
+) -> Result<(), String> {
+    for entry in entries {
+        let frame = parse_raw_frame(&mut f, &entry)
+            .map_err(|e| format!("mjpeg_convert: failed to parse frame: {:?}", e))?;
+        if frame.format != VideoCaptureFormat::Mjpeg {
+            eprintln!(
+                "mjpeg_convert: skipping frame in {:?} format...",
+                frame.format
+            );
+        }
+        writer
+            .write(&frame.raw_data)
+            .map_err(|e| format!("mjpeg_convert: failed to write frame to output: {:?}", e))?;
+    }
+    Ok(())
+}
+
+fn derive_output_from_input(
+    input_path: &Path,
+    format: &VideoCaptureFormat,
+    timestamp: DateTime<Local>,
+) -> Result<String, String> {
     let output_file_name = input_path.file_name().unwrap().to_str().unwrap();
 
+    let extension = match format {
+        VideoCaptureFormat::H265 => "mp4",
+        VideoCaptureFormat::Mjpeg => "mjpeg",
+        _ => return Err("derive_output_name: unsupported video format")?,
+    };
+
     let output_file_name = format!(
-        "{}_{}.mp4",
+        "{}_{}.{}",
         output_file_name.trim_end_matches(".vraw"),
-        timestamp.format("%Y-%m-%dT%H_%M_%S")
+        timestamp.format("%Y-%m-%dT%H_%M_%S"),
+        extension,
     );
 
-    input_path
+    Ok(input_path
         .ancestors()
         .nth(1)
         .unwrap()
         .join(output_file_name)
         .to_string_lossy()
-        .to_string()
+        .to_string())
 }
 
 #[cfg(test)]
@@ -126,13 +182,26 @@ mod tests {
     use chrono::{Local, TimeZone};
 
     #[test]
-    pub fn derive_output_from_input_same_folder() {
+    pub fn derive_output_from_input_same_folder_mp4() {
         let input = Path::new("/path/to/raw_recording/recording.vraw");
         let timestamp = Local.ymd(2022, 03, 07).and_hms(20, 50, 0);
 
-        let output = derive_output_from_input(input, timestamp);
+        let output = derive_output_from_input(input, &VideoCaptureFormat::H265, timestamp).unwrap();
         assert_eq!(
             "/path/to/raw_recording/recording_2022-03-07T20_50_00.mp4",
+            output
+        );
+    }
+
+    #[test]
+    pub fn derive_output_from_input_same_folder_mjpeg() {
+        let input = Path::new("/path/to/raw_recording/recording.vraw");
+        let timestamp = Local.ymd(2022, 03, 07).and_hms(20, 50, 0);
+
+        let output =
+            derive_output_from_input(input, &VideoCaptureFormat::Mjpeg, timestamp).unwrap();
+        assert_eq!(
+            "/path/to/raw_recording/recording_2022-03-07T20_50_00.mjpeg",
             output
         );
     }
