@@ -1,4 +1,5 @@
 target
+target_ra
 assets/*.mp4
 *.lnk
 *.mp4
